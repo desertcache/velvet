@@ -1,0 +1,17 @@
+{
+  "name": "velvet",
+  "version": "1.0.0",
+  "description": "Local speech-to-text with a liquid glass UI and audio-reactive 3D orb",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"No tests\" && exit 0"
+  },
+  "keywords": ["speech-to-text", "whisper", "electron", "glass-ui", "threejs", "webgl"],
+  "author": "desertcache",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^40.2.1"
+  }
+}
