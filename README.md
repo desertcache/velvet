@@ -43,19 +43,25 @@ pip install -r requirements.txt
 # Electron
 npm install
 
-# Launch (starts Flask backend + Electron window)
-start.bat
+# Launch
+start.bat          # Windows
+npx electron .     # Any platform
 ```
 
-Or manually:
-```bash
-python server.py          # Terminal 1 — Flask backend on :5111
-npx electron .            # Terminal 2 — Electron window
-```
+Electron automatically starts the Python backend — no need to run it separately.
 
-The whisper model (~1.5 GB) downloads automatically on first run.
+> **First run:** The whisper model (~1.5 GB) downloads automatically. This takes a few minutes depending on your connection. The status will show "Loading model..." until it's ready.
 
-**CUDA** is used by default if available. Falls back to CPU automatically — just slower.
+### CUDA (optional)
+
+CUDA is used automatically if available — transcription is significantly faster on GPU. If you don't have a CUDA GPU, it falls back to CPU (int8) with no extra configuration.
+
+For CUDA support, you need the [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) and [cuBLAS](https://developer.nvidia.com/cublas) libraries installed. See the [faster-whisper docs](https://github.com/SYSTRAN/faster-whisper#requirements) for details.
+
+### Platform notes
+
+- **Windows:** Transparent window with acrylic blur works out of the box
+- **macOS/Linux:** Electron transparency works but the acrylic blur effect may vary by compositor
 
 ## How It Works
 
