@@ -1,103 +1,52 @@
+![Velvet](screenshots/listening.png)
+
 # Velvet
 
-Local speech-to-text that runs entirely on your machine. No API keys, no cloud, no subscriptions. Click the orb, speak, get text.
+**A local-first, push-to-talk speech-to-text desktop app with an audio-reactive 3D orb. No cloud, no API keys.**
 
-<p align="center">
-  <img src="screenshots/ready.png" width="280" alt="Ready state" />
-  <img src="screenshots/listening.png" width="280" alt="Listening state" />
-  <img src="screenshots/done.png" width="280" alt="Transcription done" />
-</p>
+Velvet is an Electron desktop app that transcribes your voice entirely on-device using Whisper (`large-v3` via faster-whisper). It runs as a frameless, translucent always-on-top window with a Three.js/GLSL orb that morphs and changes color in response to your live microphone input. All audio capture and inference happen on your own machine; nothing leaves localhost.
 
-## What It Does
+## What's hard about this
 
-1. Click the orb to start recording
-2. Speak — the orb reacts to your voice in real-time (WebGL shader + FFT audio analysis)
-3. Click again to stop — transcription happens locally via [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-4. Text auto-copies to your clipboard
+The interesting engineering is in stitching three runtimes (a Chromium renderer, an Electron main process, and a Python inference process) into something that feels like one fluid app.
 
-The window is transparent and always-on-top — it floats over your desktop like a glass HUD.
+- **On-device Whisper as a managed sidecar.** Electron's main process spawns a Python Flask server (`server.py`, port 5111) as a child process at launch and pipes its stdout/stderr back. The renderer never touches the model directly: it drives recording over a small localhost HTTP API (`/record`, `/stop`, `/partial`, `/transcribe`, `/status`). The model loads on a background thread so the Flask event loop stays responsive while `large-v3` warms up, and the renderer polls `/status` (90s timeout) before enabling the record button.
+
+- **CUDA-with-CPU-fallback that actually verifies the GPU.** Loading the model on `device="cuda"` succeeds even when cuDNN is missing, then explodes at first inference. So `load_model()` runs a throwaway transcription on a buffer of zeros immediately after the CUDA load; only if that round-trips does it commit to GPU. Any exception falls back to a CPU `int8` model. The GPU path uses `int8_float16` (int8 weights, fp16 activations) specifically to fit `large-v3` in 8GB VRAM. cuDNN/cuBLAS DLLs from the pip-installed `nvidia-*` packages are injected into the DLL search path at import time via `os.add_dll_directory`, which is the usual reason a Windows faster-whisper GPU build silently won't load.
+
+- **Two-tier transcription: live partials + a high-quality final pass.** While recording, a daemon thread re-transcribes the full accumulated audio every ~2s with `beam_size=1` for cheap, fast partials that stream to the UI. On stop, a final pass runs with `beam_size=5`, VAD filtering, and a domain `initial_prompt` (seeded with terms like "Claude Code", "MCP", "faster-whisper", "CUDA") to bias decoding toward dev/technical vocabulary. Audio is captured at 16 kHz mono float32 via `sounddevice` callbacks into a chunk list and concatenated on demand.
+
+- **Frameless, transparent, always-on-top window.** The `BrowserWindow` is `frame: false`, `transparent: true`, `alwaysOnTop: true` with acrylic background material, so the whole UI is a single CSS "glass" surface (backdrop blur, SVG fractal-noise overlay, prismatic edge layers). Window dragging is handled with `-webkit-app-region: drag` on the header, and the close/minimize "traffic lights" route through IPC since there's no OS chrome.
+
+- **Secure IPC boundary.** `contextIsolation: true` / `nodeIntegration: false` means the renderer has no Node access. A `preload.js` `contextBridge` exposes a minimal `electronAPI` surface (`minimize`, `close`, `pythonStatus`, `onPythonDied`). When the Python sidecar dies, main forwards the captured stderr to the renderer over IPC so the failure shows up as a readable status message instead of a hung "loading" state.
+
+- **GLSL orb driven by a live FFT.** The renderer runs its own Web Audio `AnalyserNode` (`fftSize: 512`) on the mic stream, averages the frequency bins into a single volume scalar (with a noise gate), and pushes it into a Three.js `ShaderMaterial` as `uAmplitude`. The vertex shader displaces a 128x128 sphere using layered 3D simplex noise and blends between a "blob" and a "liquid silk" mode (`uShapeMorph`); a Fresnel term in the fragment shader drives the emissive rim glow. The app crossfades between IDLE / LISTENING / SPEAKING / PROCESSING states by lerping every uniform (colors, noise frequency, scale, morph) per frame, so transitions are smooth rather than snapping. Note the FFT for the visualizer is computed in-browser and is independent of the audio the Python side captures for transcription.
 
 ## Stack
 
-| Layer | Tech |
-|-------|------|
-| Window | Electron (frameless, transparent, always-on-top) |
-| UI | HTML/CSS glass panels + Three.js WebGL orb with custom GLSL shaders |
-| Audio | Web Audio API (FFT visualization) + Python sounddevice (capture) |
-| Transcription | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) medium model (~1.5 GB) |
-| Backend | Python Flask server on localhost |
-| GPU | CUDA float16 (auto-falls back to CPU int8) |
+- **Electron 40** — desktop shell, main/renderer/preload split, frameless transparent window.
+- **Three.js 0.160 + custom GLSL** — audio-reactive orb (vertex/fragment shaders, simplex noise, Fresnel).
+- **Web Audio API** — `getUserMedia` + `AnalyserNode` FFT for the live visualizer.
+- **Python + Flask + flask-cors** — local inference sidecar exposing an HTTP API on `127.0.0.1:5111`.
+- **faster-whisper (`large-v3`)** — on-device Whisper inference; CUDA `int8_float16` with CPU `int8` fallback.
+- **sounddevice + NumPy** — 16 kHz mono audio capture and buffering.
 
-## Setup
+## Run it
 
-**Prerequisites:** Python 3.10+, Node.js 18+, a microphone
+Velvet needs **Node.js** (for Electron) and **Python 3.11** (for the inference server) on the same machine. GPU is optional; it falls back to CPU automatically.
 
 ```bash
-# Clone
-git clone https://github.com/desertcache/velvet.git
-cd velvet
-
-# Python dependencies
-pip install -r requirements.txt
-
-# Electron
+# 1. Install Node deps (Electron)
 npm install
 
-# Launch
-start.bat          # Windows
-npx electron .     # Any platform
+# 2. Install Python deps (use the 3.11 interpreter the app launches)
+py -3.11 -m pip install -r requirements.txt
+
+# 3. Launch — this starts the Python server AND the Electron window
+npx electron .
+# or just run start.bat on Windows
 ```
 
-Electron automatically starts the Python backend — no need to run it separately.
+On first launch faster-whisper downloads the `large-v3` weights, so the initial "Loading model..." can take a while; the orb stays in a loading state until `/status` reports ready. Click the orb to start/stop recording; transcripts stream live and finalize with a higher-quality pass on stop. Use the **Copy** button to grab the text.
 
-> **First run:** The whisper model (~1.5 GB) downloads automatically. This takes a few minutes depending on your connection. The status will show "Loading model..." until it's ready.
-
-### CUDA (optional)
-
-CUDA is used automatically if available — transcription is significantly faster on GPU. If you don't have a CUDA GPU, it falls back to CPU (int8) with no extra configuration.
-
-For CUDA support, you need the [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) and [cuBLAS](https://developer.nvidia.com/cublas) libraries installed. See the [faster-whisper docs](https://github.com/SYSTRAN/faster-whisper#requirements) for details.
-
-### Platform notes
-
-- **Windows:** Transparent window with acrylic blur works out of the box
-- **macOS/Linux:** Electron transparency works but the acrylic blur effect may vary by compositor
-
-## How It Works
-
-The UI has three layers:
-
-- **Glass panels** — CSS `backdrop-filter: blur(8px)` with near-zero opacity backgrounds over a transparent Electron window
-- **Soul Orb** — A Three.js sphere with custom vertex/fragment shaders. Simplex noise deforms the mesh, fresnel shading creates edge glow, and voice amplitude drives real-time shape morphing
-- **Waveform visualizer** — Canvas-drawn frequency bars from Web Audio API FFT data, masked with a gradient fade
-
-The orb has four visual states (IDLE / LISTENING / PROCESSING / SPEAKING), each defining colors, noise parameters, scale, and shape. All transitions are lerped frame-by-frame for smooth organic motion.
-
-## Files
-
-```
-velvet/
-├── main.js           # Electron main process (window config + spawns Flask)
-├── preload.js        # IPC bridge (minimize/close)
-├── index.html        # UI — glass panels, controls, waveform canvas
-├── orb.js            # Three.js SoulOrb — WebGL shaders, state machine, audio reactivity
-├── server.py         # Flask backend — mic capture, whisper transcription
-├── start.bat         # Windows launcher
-├── requirements.txt  # Python deps
-└── package.json      # Electron dep
-```
-
-## API
-
-The Flask backend runs on `localhost:5111`:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/status` | GET | Model load state + device (CUDA/CPU) |
-| `/record` | POST | Start mic capture |
-| `/stop` | POST | Stop capture |
-| `/transcribe` | POST | Run whisper on captured audio, return text |
-
-## License
-
-MIT
+> **Platform note:** the launcher hardcodes the Windows Python launcher (`py -3.11`) in `main.js` and ships Windows helpers (`start.bat`, `launch.vbs`), so it's wired for Windows out of the box. On macOS/Linux you would swap the `spawn('py', ['-3.11', ...])` call in `main.js` for your local Python 3.11 binary.
